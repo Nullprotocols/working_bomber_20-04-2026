@@ -3,9 +3,6 @@ import aiosqlite
 from config import DB_FILE
 from typing import List, Dict, Optional
 
-# ------------------------------------------------------------------
-# डेटाबेस कनेक्शन और इनिशियलाइज़ेशन
-# ------------------------------------------------------------------
 async def get_connection():
     """Create and return an aiosqlite connection with row factory."""
     conn = await aiosqlite.connect(DB_FILE)
