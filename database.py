@@ -57,7 +57,7 @@ async def set_admin_role(user_id: int, make_admin: bool):
     )
 
 async def ban_user(user_id: int) -> bool:
-    """यूजर को बैन करें।"""
+    """यूजर को बैन करें। सफल होने पर True लौटाएं।"""
     result = await users_col.update_one(
         {"user_id": user_id},
         {"$set": {"banned": True}}
@@ -65,7 +65,7 @@ async def ban_user(user_id: int) -> bool:
     return result.modified_count > 0
 
 async def unban_user(user_id: int) -> bool:
-    """यूजर को अनबैन करें।"""
+    """यूजर को अनबैन करें। सफल होने पर True लौटाएं।"""
     result = await users_col.update_one(
         {"user_id": user_id},
         {"$set": {"banned": False}}
@@ -73,7 +73,7 @@ async def unban_user(user_id: int) -> bool:
     return result.modified_count > 0
 
 async def delete_user(user_id: int) -> bool:
-    """यूजर को डेटाबेस से हटाएं।"""
+    """यूजर को डेटाबेस से हमेशा के लिए हटाएं।"""
     result = await users_col.delete_one({"user_id": user_id})
     return result.deleted_count > 0
 
