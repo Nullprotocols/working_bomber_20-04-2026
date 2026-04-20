@@ -62,7 +62,7 @@ user_states: Dict[int, int] = {}
 user_temp_data: Dict[int, Dict] = {}
 
 # ------------------------------------------------------------------
-# Phone Number Cleaning (New Feature)
+# Phone Number Cleaning (Smart Feature)
 # ------------------------------------------------------------------
 def clean_phone_number(text: str) -> str | None:
     """
@@ -798,12 +798,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Application Setup and Main Function
 # ------------------------------------------------------------------
 async def main():
-    try:
-        await client.admin.command('ping')
-        logger.info("✅ MongoDB connected")
-    except Exception as e:
-        logger.error(f"❌ MongoDB connection failed: {e}")
-        return
+    # Initialize SQLite database
+    await init_db()
+    logger.info("✅ SQLite database initialized")
 
     app = Application.builder().token(BOT_TOKEN).rate_limiter(AIORateLimiter()).build()
 
