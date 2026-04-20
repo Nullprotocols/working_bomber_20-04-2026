@@ -1,180 +1,238 @@
 # database.py
-import motor.motor_asyncio
-from config import MONGO_URI, DATABASE_NAME
+import aiosqlite
+from config import DB_FILE
 from typing import List, Dict, Optional
-from datetime import datetime
 
 # ------------------------------------------------------------------
-# MongoDB क्लाइंट और कलेक्शंस
+# डेटाबेस कनेक्शन और इनिशियलाइज़ेशन
 # ------------------------------------------------------------------
-client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-db = client[DATABASE_NAME]
+async def get_connection():
+    """Create and return an aiosqlite connection with row factory."""
+    conn = await aiosqlite.connect(DB_FILE)
+    conn.row_factory = aiosqlite.Row
+    return conn
 
-users_col = db.users
-protected_col = db.protected_numbers
-settings_col = db.settings
+async def init_db():
+    """Create tables if not exists."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        # Users table
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                role TEXT DEFAULT 'user',
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                banned INTEGER DEFAULT 0,
+                target_number TEXT,
+                user_phone TEXT
+            )
+        ''')
+        # Protected numbers table
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS protected_numbers (
+                number TEXT PRIMARY KEY,
+                added_by INTEGER,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        # Settings table (for dynamic intervals)
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        # Indexes for performance
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_users_banned ON users(banned)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)')
+        await db.commit()
 
 # ------------------------------------------------------------------
 # यूजर ऑपरेशंस
 # ------------------------------------------------------------------
 async def add_user(user_id: int, username: str = None, first_name: str = None):
-    """नया यूजर जोड़ें या मौजूदा को अपडेट करें।"""
-    await users_col.update_one(
-        {"user_id": user_id},
-        {
-            "$setOnInsert": {
-                "username": username,
-                "first_name": first_name,
-                "role": "user",
-                "joined_at": datetime.utcnow(),
-                "banned": False,
-                "target_number": None,
-                "user_phone": None
-            }
-        },
-        upsert=True
-    )
+    """Add a new user or ignore if already exists."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute(
+            'INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)',
+            (user_id, username, first_name)
+        )
+        await db.commit()
 
 async def is_admin(user_id: int) -> bool:
-    """जांचें कि यूजर एडमिन या ओनर है या नहीं।"""
+    """Check if user is admin or owner."""
     from config import OWNER_ID
     if user_id == OWNER_ID:
         return True
-    user = await users_col.find_one({"user_id": user_id})
-    return user is not None and user.get("role") == "admin"
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute('SELECT role FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None and row['role'] == 'admin'
 
 async def is_owner(user_id: int) -> bool:
-    """जांचें कि यूजर बॉट का ओनर है या नहीं।"""
+    """Check if user is the bot owner."""
     from config import OWNER_ID
     return user_id == OWNER_ID
 
 async def set_admin_role(user_id: int, make_admin: bool):
-    """यूजर को एडमिन बनाएं या एडमिन से हटाएं।"""
-    role = "admin" if make_admin else "user"
-    await users_col.update_one(
-        {"user_id": user_id},
-        {"$set": {"role": role}}
-    )
+    """Promote or demote a user to/from admin."""
+    role = 'admin' if make_admin else 'user'
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
+        await db.commit()
 
 async def ban_user(user_id: int) -> bool:
-    """यूजर को बैन करें। सफल होने पर True लौटाएं।"""
-    result = await users_col.update_one(
-        {"user_id": user_id},
-        {"$set": {"banned": True}}
-    )
-    return result.modified_count > 0
+    """Ban a user. Returns True if user existed."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute('UPDATE users SET banned = 1 WHERE user_id = ?', (user_id,))
+        await db.commit()
+        return cursor.rowcount > 0
 
 async def unban_user(user_id: int) -> bool:
-    """यूजर को अनबैन करें। सफल होने पर True लौटाएं।"""
-    result = await users_col.update_one(
-        {"user_id": user_id},
-        {"$set": {"banned": False}}
-    )
-    return result.modified_count > 0
+    """Unban a user. Returns True if user existed and was banned."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute('UPDATE users SET banned = 0 WHERE user_id = ?', (user_id,))
+        await db.commit()
+        return cursor.rowcount > 0
 
 async def delete_user(user_id: int) -> bool:
-    """यूजर को डेटाबेस से हमेशा के लिए हटाएं।"""
-    result = await users_col.delete_one({"user_id": user_id})
-    return result.deleted_count > 0
+    """Delete user from database. Returns True if user existed."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+        await db.commit()
+        return cursor.rowcount > 0
 
 async def get_user_by_id(user_id: int) -> Optional[Dict]:
-    """यूजर की पूरी जानकारी प्राप्त करें।"""
-    return await users_col.find_one({"user_id": user_id})
+    """Get full user record by ID."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute('SELECT * FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
 async def update_user_target(user_id: int, target: str):
-    """यूजर द्वारा बॉम्ब किए जा रहे टारगेट नंबर को सेव करें।"""
-    await users_col.update_one(
-        {"user_id": user_id},
-        {"$set": {"target_number": target}}
-    )
+    """Store the target phone number for a user."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute('UPDATE users SET target_number = ? WHERE user_id = ?', (target, user_id))
+        await db.commit()
 
 async def get_user_target(user_id: int) -> Optional[str]:
-    """यूजर का सेव किया हुआ टारगेट नंबर प्राप्त करें।"""
-    user = await users_col.find_one({"user_id": user_id})
-    return user.get("target_number") if user else None
+    """Retrieve the stored target phone number for a user."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute('SELECT target_number FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row['target_number'] if row else None
 
 async def update_user_phone(user_id: int, phone: str):
-    """यूजर का अपना फ़ोन नंबर सेव करें (सेल्फ-बॉम्बिंग रोकने के लिए)।"""
-    await users_col.update_one(
-        {"user_id": user_id},
-        {"$set": {"user_phone": phone}}
-    )
+    """Store user's own phone number (for self-bombing prevention)."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute('UPDATE users SET user_phone = ? WHERE user_id = ?', (phone, user_id))
+        await db.commit()
 
 async def get_user_phone(user_id: int) -> Optional[str]:
-    """यूजर का सेव किया हुआ अपना फ़ोन नंबर प्राप्त करें।"""
-    user = await users_col.find_one({"user_id": user_id})
-    return user.get("user_phone") if user else None
+    """Retrieve user's own phone number."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute('SELECT user_phone FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row['user_phone'] if row else None
 
 async def get_all_users_paginated(page: int, per_page: int = 10) -> List[Dict]:
-    """पेजिनेशन के साथ सभी यूजर्स की लिस्ट प्राप्त करें।"""
-    skip = page * per_page
-    cursor = users_col.find().sort("user_id", 1).skip(skip).limit(per_page)
-    return await cursor.to_list(length=per_page)
+    """Return a page of users sorted by user_id."""
+    offset = page * per_page
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute(
+            '''SELECT user_id, username, first_name, role, joined_at, banned
+               FROM users ORDER BY user_id LIMIT ? OFFSET ?''',
+            (per_page, offset)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
 async def get_all_user_ids() -> List[int]:
-    """सभी यूजर्स के आईडी की लिस्ट प्राप्त करें (ब्रॉडकास्ट के लिए)।"""
-    cursor = users_col.find({}, {"user_id": 1})
-    users = await cursor.to_list(length=None)
-    return [u["user_id"] for u in users]
+    """Return list of all user IDs (for broadcast)."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute('SELECT user_id FROM users') as cursor:
+            rows = await cursor.fetchall()
+            return [row['user_id'] for row in rows]
 
 # ------------------------------------------------------------------
 # प्रोटेक्टेड नंबर्स
 # ------------------------------------------------------------------
 async def add_protected_number(number: str, added_by: int) -> bool:
-    """नया नंबर प्रोटेक्टेड लिस्ट में जोड़ें।"""
-    existing = await protected_col.find_one({"number": number})
-    if existing:
+    """Add a phone number to protected list. Returns True if added."""
+    try:
+        async with aiosqlite.connect(DB_FILE) as db:
+            await db.execute('INSERT INTO protected_numbers (number, added_by) VALUES (?, ?)', (number, added_by))
+            await db.commit()
+            return True
+    except aiosqlite.IntegrityError:
         return False
-    await protected_col.insert_one({
-        "number": number,
-        "added_by": added_by,
-        "added_at": datetime.utcnow()
-    })
-    return True
 
 async def remove_protected_number(number: str) -> bool:
-    """नंबर को प्रोटेक्टेड लिस्ट से हटाएं।"""
-    result = await protected_col.delete_one({"number": number})
-    return result.deleted_count > 0
+    """Remove a phone number from protected list. Returns True if removed."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute('DELETE FROM protected_numbers WHERE number = ?', (number,))
+        await db.commit()
+        return cursor.rowcount > 0
 
 async def is_protected(number: str) -> bool:
-    """जांचें कि नंबर प्रोटेक्टेड है या नहीं।"""
-    return await protected_col.find_one({"number": number}) is not None
+    """Check if a phone number is protected."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute('SELECT 1 FROM protected_numbers WHERE number = ?', (number,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
 
 async def get_all_protected_numbers() -> List[str]:
-    """सभी प्रोटेक्टेड नंबरों की लिस्ट प्राप्त करें।"""
-    cursor = protected_col.find({}, {"number": 1}).sort("added_at", -1)
-    docs = await cursor.to_list(length=None)
-    return [doc["number"] for doc in docs]
+    """Return list of all protected numbers."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute('SELECT number FROM protected_numbers ORDER BY added_at DESC') as cursor:
+            rows = await cursor.fetchall()
+            return [row['number'] for row in rows]
 
 # ------------------------------------------------------------------
 # सेटिंग्स (डायनमिक इंटरवल)
 # ------------------------------------------------------------------
 async def get_settings() -> Dict:
-    """बॉम्बिंग इंटरवल की सेटिंग्स प्राप्त करें (न होने पर डिफ़ॉल्ट बनाएं)।"""
-    settings = await settings_col.find_one({"_id": "bombing_intervals"})
-    if not settings:
-        from config import DEFAULT_CALL_INTERVAL, DEFAULT_SMS_INTERVAL
-        settings = {
-            "_id": "bombing_intervals",
-            "call_interval": DEFAULT_CALL_INTERVAL,
-            "sms_interval": DEFAULT_SMS_INTERVAL
-        }
-        await settings_col.insert_one(settings)
+    """Get bombing interval settings, create defaults if missing."""
+    from config import DEFAULT_CALL_INTERVAL, DEFAULT_SMS_INTERVAL
+    async with aiosqlite.connect(DB_FILE) as db:
+        # Ensure settings table exists
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        await db.commit()
+        
+        settings = {}
+        async with db.execute('SELECT key, value FROM settings') as cursor:
+            rows = await cursor.fetchall()
+            for row in rows:
+                settings[row['key']] = int(row['value'])
+        
+        # Insert defaults if missing
+        if 'call_interval' not in settings:
+            settings['call_interval'] = DEFAULT_CALL_INTERVAL
+            await db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+                           ('call_interval', str(DEFAULT_CALL_INTERVAL)))
+        if 'sms_interval' not in settings:
+            settings['sms_interval'] = DEFAULT_SMS_INTERVAL
+            await db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+                           ('sms_interval', str(DEFAULT_SMS_INTERVAL)))
+        await db.commit()
     return settings
 
 async def update_call_interval(seconds: int):
-    """कॉल API का इंटरवल अपडेट करें।"""
-    await settings_col.update_one(
-        {"_id": "bombing_intervals"},
-        {"$set": {"call_interval": seconds}},
-        upsert=True
-    )
+    """Update global call API interval."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+                       ('call_interval', str(seconds)))
+        await db.commit()
 
 async def update_sms_interval(seconds: int):
-    """SMS/WhatsApp API का इंटरवल अपडेट करें।"""
-    await settings_col.update_one(
-        {"_id": "bombing_intervals"},
-        {"$set": {"sms_interval": seconds}},
-        upsert=True
-    )
+    """Update global SMS/WhatsApp API interval."""
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+                       ('sms_interval', str(seconds)))
+        await db.commit()
