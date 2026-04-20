@@ -42,8 +42,8 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1003712674883"))
 # फोर्स जॉइन चैनल्स (वैकल्पिक)
 # ------------------------------------------------------------------
 FORCE_CHANNELS = [
-    {"name": "User Chat", "link": "https://t.me/legend_chats_osint", "id": -1003672015073},
-    {"name": "OSINT Lookup", "link": "https://t.me/osint_lookup", "id": -1003698567122},
+    {"name": "legend chats", "link": "https://t.me/legend_chats_osint", "id": -1003672015073},
+    {"name": "OSINT Lookup", "link": "https://t.me/osint_lookup", "id": -1003698567122}
 ]
 
 # ==================================================================
